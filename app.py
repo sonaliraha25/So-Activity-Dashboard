@@ -278,7 +278,7 @@ with tabs[0]:
         st.markdown("**Bottom 5 SOs** (excl. zero-visit — see alert below)")
         st.dataframe(so_nz.nsmallest(5, "SO Score")[so_cols],
                      use_container_width=True, hide_index=True)
-    st.caption("SO Score blends Visits, Memos and Order value — same basis for "
+    st.caption("SO Score blends Visits, Memos and Order value"
                "both Top 5 and Bottom 5.")
 
     zero = df[df["Total Outlet Visit"] == 0]
@@ -330,53 +330,86 @@ with tabs[3]:
         rows = []
         for dte, d in sorted(st.session_state.datasets.items()):
             d2 = d[d["Group"].isin(groups) & d["Region Name"].isin(regions)]
+            so_count = len(d2)
             v = d2["Total Outlet Visit"].sum()
             m = d2["Memo"].sum()
-            rows.append({"Date": dte, "Visits": v, "Memos": m,
+            v_tgt = so_count * VISIT_TGT_PER_SO
+            rows.append({"Date": dte, "SO Count": so_count, "Visits": v, "Memos": m,
+                         "Visit TGT": v_tgt,
                          "Order (k)": round(d2["Order Amount"].sum() / 1000, 1),
-                         "Visit %": round(v / (len(d2) * VISIT_TGT_PER_SO) * 100, 1),
-                         "Strike Rate %": round(m / v * 100, 1) if v else 0})
+                         "Visit %": round(v / v_tgt * 100, 1) if v_tgt else None,
+                         "Strike Rate %": round(m / v * 100, 1) if v else None})
         trend = pd.DataFrame(rows)
+        trend["Month"] = trend["Date"].dt.strftime("%b %Y")
+        n_months = trend["Month"].nunique()
+
+        if trend["SO Count"].eq(0).any():
+            missing_dates = trend.loc[trend["SO Count"] == 0, "Date"] \
+                .dt.strftime("%d %b").tolist()
+            st.warning(f"No SOs match the current filters on: "
+                      f"{', '.join(missing_dates)} — those days show blank "
+                      "for rate metrics rather than being skipped.")
 
         tmetric = st.selectbox("Trend metric",
                                ["Visits", "Memos", "Order (k)", "Visit %",
                                 "Strike Rate %"])
-        trend["Growth %"] = (trend[tmetric].pct_change() * 100).round(1)
 
-        st.subheader("📅 Daily trend")
-        fig = px.line(trend, x="Date", y=tmetric, markers=True)
-        st.plotly_chart(fig, use_container_width=True)
+        if n_months < 2:
+            # ── All stored dates fall in one month → show the DAILY view ──
+            trend["Growth %"] = (trend[tmetric].pct_change() * 100).round(1)
+            trend["Growth %"] = trend["Growth %"].replace(
+                [float("inf"), float("-inf")], None)
 
-        st.subheader("Day-over-day growth")
-        gfig = px.bar(trend.dropna(subset=["Growth %"]), x="Date", y="Growth %",
-                      text="Growth %",
-                      color=trend.dropna(subset=["Growth %"])["Growth %"] >= 0,
-                      color_discrete_map={True: "#1D9E75", False: "#E24B4A"})
-        gfig.update_layout(showlegend=False)
-        gfig.add_hline(y=0, line_color="gray")
-        st.plotly_chart(gfig, use_container_width=True)
-        st.dataframe(trend, use_container_width=True, hide_index=True)
+            st.subheader("📅 Daily trend")
+            fig = px.line(trend, x="Date", y=tmetric, markers=True)
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Monthly comparison — activates when data spans 2+ months
-        trend["Month"] = trend["Date"].dt.strftime("%b %Y")
-        if trend["Month"].nunique() >= 2:
-            st.subheader("🗓️ Monthly comparison")
+            st.subheader("Day-over-day growth")
+            gfig = px.bar(trend.dropna(subset=["Growth %"]), x="Date", y="Growth %",
+                          text="Growth %",
+                          color=trend.dropna(subset=["Growth %"])["Growth %"] >= 0,
+                          color_discrete_map={True: "#1D9E75", False: "#E24B4A"})
+            gfig.update_layout(showlegend=False)
+            gfig.add_hline(y=0, line_color="gray")
+            st.plotly_chart(gfig, use_container_width=True)
+            st.dataframe(trend.drop(columns=["Month"]),
+                        use_container_width=True, hide_index=True)
+            st.caption("Once your data crosses into a second month, this tab "
+                      "switches to a month-over-month view automatically.")
+
+        else:
+            # ── Data spans 2+ months → show the MONTHLY view ──
+            st.subheader("🗓️ Monthly trend")
             monthly = trend.groupby("Month", sort=False).agg(
                 Days=("Date", "count"),
                 Visits=("Visits", "sum"),
                 Memos=("Memos", "sum"),
+                Visit_TGT=("Visit TGT", "sum"),
                 **{"Order (k)": ("Order (k)", "sum")},
             ).reset_index()
+            monthly["Visit %"] = (monthly["Visits"] / monthly["Visit_TGT"]
+                                  * 100).round(1)
             monthly["Strike Rate %"] = (monthly["Memos"] / monthly["Visits"]
                                         * 100).round(1)
-            mm = tmetric if tmetric in monthly.columns else "Order (k)"
-            monthly["MoM Growth %"] = (monthly[mm].pct_change() * 100).round(1)
-            st.dataframe(monthly, use_container_width=True, hide_index=True)
-            mfig = px.bar(monthly, x="Month", y=mm, text=mm)
+            monthly = monthly.drop(columns=["Visit_TGT"])
+
+            monthly["MoM Growth %"] = (monthly[tmetric].pct_change() * 100).round(1)
+            monthly["MoM Growth %"] = monthly["MoM Growth %"].replace(
+                [float("inf"), float("-inf")], None)
+
+            mfig = px.bar(monthly, x="Month", y=tmetric, text=tmetric)
             st.plotly_chart(mfig, use_container_width=True)
+            st.dataframe(monthly, use_container_width=True, hide_index=True)
             st.caption("Note: months with different day counts aren't directly "
-                       "comparable on totals — check the Days column, or compare "
-                       "rate metrics like Strike Rate %.")
+                      "comparable on totals — check the Days column, or compare "
+                      "rate metrics like Strike Rate % and Visit %.")
+
+            with st.expander("📅 See daily breakdown"):
+                dfig = px.line(trend, x="Date", y=tmetric, markers=True,
+                              color="Month")
+                st.plotly_chart(dfig, use_container_width=True)
+                st.dataframe(trend.drop(columns=["Month"]),
+                            use_container_width=True, hide_index=True)
 
 # ─────────────────────────────────────────────────────────────────
 # Tab 5 — SO Detail with zone highlight
