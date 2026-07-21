@@ -236,7 +236,9 @@ with tabs[0]:
         fig = px.bar(top5.sort_values(rank_col), x=rank_col, y="Zone",
                      orientation="h", text=rank_col,
                      color_discrete_sequence=["#1D9E75"])
-        fig.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0),
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_xaxes(range=[0, top5[rank_col].max() * 1.25])
+        fig.update_layout(height=280, margin=dict(l=0, r=30, t=10, b=0),
                           yaxis_title=None)
         st.plotly_chart(fig, use_container_width=True)
     with right:
@@ -244,7 +246,9 @@ with tabs[0]:
         fig = px.bar(bottom5.sort_values(rank_col, ascending=False),
                      x=rank_col, y="Zone", orientation="h", text=rank_col,
                      color_discrete_sequence=["#E24B4A"])
-        fig.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0),
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_xaxes(range=[0, max(bottom5[rank_col].max() * 1.25, 1)])
+        fig.update_layout(height=280, margin=dict(l=0, r=30, t=10, b=0),
                           yaxis_title=None)
         st.plotly_chart(fig, use_container_width=True)
     if metric == "Overall Performance":
@@ -278,7 +282,7 @@ with tabs[0]:
         st.markdown("**Bottom 5 SOs** (excl. zero-visit — see alert below)")
         st.dataframe(so_nz.nsmallest(5, "SO Score")[so_cols],
                      use_container_width=True, hide_index=True)
-    st.caption("SO Score blends Visits, Memos and Order value"
+    st.caption("SO Score blends Visits, Memos and Order value — same basis for "
                "both Top 5 and Bottom 5.")
 
     zero = df[df["Total Outlet Visit"] == 0]
