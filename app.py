@@ -46,8 +46,9 @@ def summarize(d, by):
     g["Visit %"] = (g["Visit"] / g["Visit TGT"] * 100).round(1)
     g["Avg Visit"] = (g["Visit"] / g["Total_SO"]).round(1)
     g["Avg Memo"] = (g["Memo"] / g["Total_SO"]).round(1)
-    g["Order Coverage %"] = (g["Memo"] / g["Total_Outlet"] * 100).round(1)
-    g["Strike Rate %"] = (g["Memo"] / g["Visit"].replace(0, pd.NA) * 100).round(1)
+    g["Order Coverage %"] = (g["Memo"] / g["Total_Outlet"].where(g["Total_Outlet"] > 0)
+                             * 100).round(1)
+    g["Strike Rate %"] = (g["Memo"] / g["Visit"].where(g["Visit"] > 0) * 100).round(1)
     g["Order (k)"] = (g["Order"] / 1000).round(1)
     g["AsOf Order (k)"] = (g["AsOf_Order"] / 1000).round(1)
     return g
@@ -205,47 +206,80 @@ with tabs[0]:
     zone = summarize(df, ["Group", "Zone Name"])
     zone["Zone"] = zone["Zone Name"] + " (" + zone["Group"].str[0] + ")"
 
-    metric = st.radio("Rank by", ["Visit %", "Strike Rate %", "Order (k)", "Avg Memo"],
-                      horizontal=True)
+    # Overall Performance Score — blends Visit %, Strike Rate %, Order
+    # Coverage % and Order value into one 0-100 score (each metric scaled
+    # relative to today's zones), so Top 5 and Bottom 5 always compare
+    # zones on the SAME basis instead of different metrics.
+    score_metrics = ["Visit %", "Strike Rate %", "Order Coverage %", "Order (k)"]
+    norm_cols = []
+    for m in score_metrics:
+        col = zone[m]
+        mn, mx = col.min(), col.max()
+        ncol = f"_n_{m}"
+        zone[ncol] = 50.0 if pd.isna(mx - mn) or mx == mn else (col - mn) / (mx - mn) * 100
+        norm_cols.append(ncol)
+    zone["Overall Score"] = zone[norm_cols].mean(axis=1).round(1)
+    zone = zone.drop(columns=norm_cols)
 
-    ranked = zone.dropna(subset=[metric]).sort_values(metric, ascending=False)
+    metric = st.radio("Rank by",
+                      ["Overall Performance", "Visit %", "Strike Rate %",
+                       "Order (k)", "Avg Memo"],
+                      horizontal=True, index=0)
+    rank_col = "Overall Score" if metric == "Overall Performance" else metric
+
+    ranked = zone.dropna(subset=[rank_col]).sort_values(rank_col, ascending=False)
     top5, bottom5 = ranked.head(5), ranked.tail(5)
 
     left, right = st.columns(2)
     with left:
-        st.subheader("🟢 Top 5 zones")
-        fig = px.bar(top5.sort_values(metric), x=metric, y="Zone",
-                     orientation="h", text=metric,
+        st.subheader(f"🟢 Top 5 zones — {metric}")
+        fig = px.bar(top5.sort_values(rank_col), x=rank_col, y="Zone",
+                     orientation="h", text=rank_col,
                      color_discrete_sequence=["#1D9E75"])
         fig.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0),
                           yaxis_title=None)
         st.plotly_chart(fig, use_container_width=True)
     with right:
-        st.subheader("🔴 Bottom 5 zones")
-        fig = px.bar(bottom5.sort_values(metric, ascending=False),
-                     x=metric, y="Zone", orientation="h", text=metric,
+        st.subheader(f"🔴 Bottom 5 zones — {metric}")
+        fig = px.bar(bottom5.sort_values(rank_col, ascending=False),
+                     x=rank_col, y="Zone", orientation="h", text=rank_col,
                      color_discrete_sequence=["#E24B4A"])
         fig.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0),
                           yaxis_title=None)
         st.plotly_chart(fig, use_container_width=True)
+    if metric == "Overall Performance":
+        st.caption("Overall Score blends Visit %, Strike Rate %, Order Coverage % "
+                   "and Order value — each scaled 0-100 relative to today's zones, "
+                   "then averaged. Same score ranks both Top 5 and Bottom 5.")
 
-    st.subheader("SO-level extremes")
+    st.subheader("SO-level extremes — overall performance")
     so = df.copy()
     so["Order (k)"] = (so["Order Amount"] / 1000).round(1)
+    so_nz = so[so["Total Outlet Visit"] > 0].copy()
+    so_metrics = ["Total Outlet Visit", "Memo", "Order (k)"]
+    so_norm_cols = []
+    for m in so_metrics:
+        col = so_nz[m]
+        mn, mx = col.min(), col.max()
+        ncol = f"_n_{m}"
+        so_nz[ncol] = 50.0 if mx == mn else (col - mn) / (mx - mn) * 100
+        so_norm_cols.append(ncol)
+    so_nz["SO Score"] = so_nz[so_norm_cols].mean(axis=1).round(1)
+    so_nz = so_nz.drop(columns=so_norm_cols)
+
+    so_cols = ["SR Name", "Zone Name", "Group", "Total Outlet Visit",
+              "Memo", "Order (k)", "SO Score"]
     a, b = st.columns(2)
     with a:
-        st.markdown("**Top 5 SOs by order value**")
-        st.dataframe(so.nlargest(5, "Order (k)")
-                     [["SR Name", "Zone Name", "Group", "Total Outlet Visit",
-                       "Memo", "Order (k)"]],
+        st.markdown("**Top 5 SOs**")
+        st.dataframe(so_nz.nlargest(5, "SO Score")[so_cols],
                      use_container_width=True, hide_index=True)
     with b:
-        st.markdown("**Bottom 5 SOs by visits (excl. zero)**")
-        nz = so[so["Total Outlet Visit"] > 0]
-        st.dataframe(nz.nsmallest(5, "Total Outlet Visit")
-                     [["SR Name", "Zone Name", "Group", "Total Outlet Visit",
-                       "Memo", "Order (k)"]],
+        st.markdown("**Bottom 5 SOs** (excl. zero-visit — see alert below)")
+        st.dataframe(so_nz.nsmallest(5, "SO Score")[so_cols],
                      use_container_width=True, hide_index=True)
+    st.caption("SO Score blends Visits, Memos and Order value — same basis for "
+               "both Top 5 and Bottom 5.")
 
     zero = df[df["Total Outlet Visit"] == 0]
     if len(zero):
